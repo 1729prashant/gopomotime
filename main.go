@@ -27,6 +27,10 @@ type model struct {
 	isRunning   bool
 	isPaused    bool
 	blink       bool // For blinking effect
+
+	// For key highlight feedback
+	highlightKey   string
+	highlightUntil time.Time
 }
 
 type tickMsg time.Time
@@ -34,11 +38,17 @@ type blinkMsg time.Time
 
 // Styling for the circle and text
 var (
-	redStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#FF0000")) // Red for remaining time
-	whiteStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFFFFF")) // White for elapsed time and timer
-	greenStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#00FF00")) // Green for finished text
-	circleStyle = lipgloss.NewStyle()                                       // No center alignment
+	redStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("#FF0000")) // Red for remaining time
+	whiteStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFFFFF")) // White for elapsed time and timer
+	greenStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("#00FF00")) // Green for finished text
+	circleStyle    = lipgloss.NewStyle()                                       // No center alignment
+	highlightStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFa400")) // Orange highlight
 )
+
+// Highlight duration for key feedback
+const highlightDuration = 500 * time.Millisecond
+
+type highlightMsg struct{}
 
 // parseDuration parses the input "mm:ss" into a time.Duration
 func parseDuration(input string) (time.Duration, error) {
@@ -73,25 +83,33 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case tea.KeyCtrlC:
 			return m, tea.Quit
 		}
+		now := time.Now()
 		switch msg.String() {
 		case "q":
-			return m, tea.Quit
+			m.highlightKey = "q"
+			m.highlightUntil = now.Add(highlightDuration)
+			return m, tea.Batch(tea.Tick(highlightDuration, func(t time.Time) tea.Msg { return highlightMsg{} }), tea.Quit)
 		case "r":
 			m.isRunning = true
 			m.isPaused = false
 			m.elapsedTime = 0
-			return m, tickCmd() // Restart immediately
+			m.highlightKey = "r"
+			m.highlightUntil = now.Add(highlightDuration)
+			return m, tea.Batch(tea.Tick(highlightDuration, func(t time.Time) tea.Msg { return highlightMsg{} }), tickCmd())
 		case "p":
+			m.highlightKey = "p"
+			m.highlightUntil = now.Add(highlightDuration)
 			if m.isRunning {
 				m.isPaused = !m.isPaused
 				if !m.isPaused {
-					return m, tickCmd()
+					return m, tea.Batch(tea.Tick(highlightDuration, func(t time.Time) tea.Msg { return highlightMsg{} }), tickCmd())
 				}
 			} else {
 				m.isRunning = true
 				m.isPaused = false
-				return m, tickCmd()
+				return m, tea.Batch(tea.Tick(highlightDuration, func(t time.Time) tea.Msg { return highlightMsg{} }), tickCmd())
 			}
+			return m, tea.Tick(highlightDuration, func(t time.Time) tea.Msg { return highlightMsg{} })
 		}
 	case tickMsg:
 		if m.isRunning && !m.isPaused && m.elapsedTime < m.totalTime {
@@ -111,6 +129,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !m.isRunning && m.elapsedTime >= m.totalTime {
 			return m, blinkCmd() // Keep blinking only when finished
 		}
+	case highlightMsg:
+		m.highlightKey = ""
+		m.highlightUntil = time.Time{}
 	}
 	return m, nil
 }
@@ -163,11 +184,37 @@ func (m model) View() string {
 		status = " \n    [q]uit [r]eset [p]ause"
 	}
 
-	// Center status text within 29-column width
+	// Center status text within 29-column width, with highlight if needed
 	statusLines := strings.Split(status, "\n")
 	for i, line := range statusLines {
 		if !(i == 0 && !m.isRunning && m.elapsedTime >= m.totalTime) { // Skip finishedText, already padded
-			padding := (width - len(strings.TrimSpace(line))) / 2
+			// Highlight logic
+			if m.highlightKey != "" && time.Now().Before(m.highlightUntil) {
+				if m.highlightKey == "q" && strings.Contains(line, "[q]uit") {
+					// Replace with highlighted, but pad to same width
+					h := highlightStyle.Render("[q]uit")
+					pad := len("[q]uit") - len([]rune("[q]uit")) + len([]rune(h)) - len(h)
+					line = strings.Replace(line, "[q]uit", h+strings.Repeat(" ", pad), 1)
+				} else if m.highlightKey == "r" && strings.Contains(line, "[r]eset") {
+					h := highlightStyle.Render("[r]eset")
+					pad := len("[r]eset") - len([]rune("[r]eset")) + len([]rune(h)) - len(h)
+					line = strings.Replace(line, "[r]eset", h+strings.Repeat(" ", pad), 1)
+				} else if m.highlightKey == "p" {
+					if strings.Contains(line, "[p]ause") {
+						h := highlightStyle.Render("[p]ause")
+						pad := len("[p]ause") - len([]rune("[p]ause")) + len([]rune(h)) - len(h)
+						line = strings.Replace(line, "[p]ause", h+strings.Repeat(" ", pad), 1)
+					}
+					if strings.Contains(line, "un[p]ause") {
+						h := highlightStyle.Render("un[p]ause")
+						pad := len("un[p]ause") - len([]rune("un[p]ause")) + len([]rune(h)) - len(h)
+						line = strings.Replace(line, "un[p]ause", h+strings.Repeat(" ", pad), 1)
+					}
+				}
+			}
+			// Always center using the original line length (without color codes)
+			plainLine := stripANSI(line)
+			padding := (width - len([]rune(strings.TrimSpace(plainLine)))) / 2
 			if padding < 0 {
 				padding = 0
 			}
@@ -249,6 +296,26 @@ func drawCircle(progress float64, timer string) string {
 	}
 
 	return strings.Join(lines, "\n")
+}
+
+// stripANSI removes ANSI escape codes for accurate width calculation
+func stripANSI(str string) string {
+	in := false
+	out := make([]rune, 0, len(str))
+	for _, r := range str {
+		if r == 27 { // ESC
+			in = true
+			continue
+		}
+		if in {
+			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
+				in = false
+			}
+			continue
+		}
+		out = append(out, r)
+	}
+	return string(out)
 }
 
 func main() {
