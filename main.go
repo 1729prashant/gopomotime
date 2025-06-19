@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -15,7 +16,9 @@ const (
 	maxMinutes = 99
 	maxSeconds = 59
 	tickRate   = time.Second
-	circleSize = 12 // Height and width of the circle in characters
+	blinkRate  = 800 * time.Millisecond
+	height     = 13 // Donut height
+	width      = 29 // Donut width
 )
 
 type model struct {
@@ -23,15 +26,18 @@ type model struct {
 	elapsedTime time.Duration
 	isRunning   bool
 	isPaused    bool
+	blink       bool // For blinking effect
 }
 
 type tickMsg time.Time
+type blinkMsg time.Time
 
 // Styling for the circle and text
 var (
 	redStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#FF0000")) // Red for remaining time
 	whiteStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFFFFF")) // White for elapsed time and timer
-	circleStyle = lipgloss.NewStyle().Align(lipgloss.Center)
+	greenStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#00FF00")) // Green for finished text
+	circleStyle = lipgloss.NewStyle()                                       // No center alignment
 )
 
 // parseDuration parses the input "mm:ss" into a time.Duration
@@ -56,7 +62,7 @@ func parseDuration(input string) (time.Duration, error) {
 
 // Initialize the model
 func (m model) Init() tea.Cmd {
-	return tickCmd() // Start ticking immediately
+	return tea.Batch(tickCmd(), blinkCmd()) // Start ticking and blinking
 }
 
 // Update the model based on messages
@@ -70,12 +76,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "q":
 			return m, tea.Quit
-		case "s":
-			m.isRunning = false
+		case "r":
+			m.isRunning = true
 			m.isPaused = false
 			m.elapsedTime = 0
-			return m, nil
-		case "p", "r":
+			return m, tickCmd() // Restart immediately
+		case "p":
 			if m.isRunning {
 				m.isPaused = !m.isPaused
 				if !m.isPaused {
@@ -98,6 +104,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.isRunning {
 				return m, tickCmd()
 			}
+		}
+		return m, blinkCmd() // Continue blinking when finished
+	case blinkMsg:
+		m.blink = !m.blink
+		if !m.isRunning && m.elapsedTime >= m.totalTime {
+			return m, blinkCmd() // Keep blinking only when finished
 		}
 	}
 	return m, nil
@@ -123,27 +135,51 @@ func (m model) View() string {
 		}
 	}
 
-	// Draw the circle
-	circle := drawCircle(progress)
-
-	// Center the timer inside the circle
-	lines := strings.Split(circle, "\n")
-	timerLine := (circleSize - 1) / 2
-	lines[timerLine] = centerText(timer, len(lines[timerLine]), whiteStyle)
+	// Draw the ASCII donut
+	circle := drawCircle(progress, timer)
 
 	// Combine the circle with status text
-	status := "\n [s]reset  [p]pause  [r]resume  [q]quit"
+	var status string
 	if !m.isRunning {
 		if m.elapsedTime >= m.totalTime {
-			status = "Timer finished! \n [s]reset  [p]pause  [r]resume  [q]quit"
+			// Apply green and blinking to "Timer finished!" only
+			finishedText := "Timer finished!"
+			padding := (width - len(finishedText)) / 2 // 7 spaces
+			if m.blink {
+				finishedText = strings.Repeat(" ", padding) + greenStyle.Render(finishedText) + strings.Repeat(" ", padding)
+			} else {
+				finishedText = strings.Repeat(" ", width) // Full width blank for centering
+			}
+			controls := " [q]uit [r]eset [p]ause"
+			controlsPadding := (width - len(controls)) / 2 // 4 spaces
+			controls = strings.Repeat(" ", controlsPadding) + controls
+			status = finishedText + "\n" + controls
 		} else {
-			status = "Timer stopped. \n [s]reset  [p]pause  [r]resume  [q]quit"
+			status = "Timer stopped. \n    [q]uit [r]eset [p]ause"
 		}
 	} else if m.isPaused {
-		status = "Timer paused. \n [s]reset  [p]pause  [r]resume  [q]quit"
+		status = "Timer paused. \n    [q]uit [r]eset un[p]ause"
+	} else {
+		status = " \n    [q]uit [r]eset [p]ause"
 	}
 
-	return circleStyle.Render(strings.Join(lines, "\n") + "\n\n" + status)
+	// Center status text within 29-column width
+	statusLines := strings.Split(status, "\n")
+	for i, line := range statusLines {
+		if !(i == 0 && !m.isRunning && m.elapsedTime >= m.totalTime) { // Skip finishedText, already padded
+			padding := (width - len(strings.TrimSpace(line))) / 2
+			if padding < 0 {
+				padding = 0
+			}
+			statusLines[i] = strings.Repeat(" ", padding) + line
+		}
+	}
+	centeredStatus := strings.Join(statusLines, "\n")
+
+	// Add left padding to shift entire block left
+	leftPadding := strings.Repeat(" ", 4)
+	output := strings.Join(strings.Split(circle, "\n"), "\n"+leftPadding) + "\n" + leftPadding + centeredStatus
+	return circleStyle.Render(leftPadding + output)
 }
 
 // tickCmd sends a tick message every second
@@ -153,34 +189,58 @@ func tickCmd() tea.Cmd {
 	})
 }
 
-// drawCircle creates a simple ASCII circle with a marker
-func drawCircle(progress float64) string {
-	// Simple circle representation using Unicode block characters
-	lines := make([]string, circleSize)
-	center := circleSize / 2
-	radius := center - 1
+// blinkCmd sends a blink message every 500ms
+func blinkCmd() tea.Cmd {
+	return tea.Tick(blinkRate, func(t time.Time) tea.Msg {
+		return blinkMsg(t)
+	})
+}
 
-	// Calculate the number of "segments" in the circle
-	totalSegments := 40 // Arbitrary number of segments for the circle
-	elapsedSegments := int(progress * float64(totalSegments))
+// drawCircle creates a 13x29 ASCII donut with progress and timer
+func drawCircle(progress float64, timer string) string {
+	// Provided 13x29 ASCII donut template
+	donutTemplate := []string{
+		"          *********          ",
+		"      *****************      ",
+		"    *********************    ",
+		"  **********     **********  ",
+		" ********           ******** ",
+		" ******               ****** ",
+		" ******     mm:ss     ****** ",
+		" ******               ****** ",
+		" *******             ******* ",
+		"  **********     **********  ",
+		"    *********************    ",
+		"      *****************      ",
+		"          *********          ",
+	}
 
-	for y := 0; y < circleSize; y++ {
+	centerX, centerY := float64(width/2), float64(height/2) // 14.5, 6.5
+	totalSegments := 120                                    // Smooth progress
+	lines := make([]string, height)
+
+	for y := 0; y < height; y++ {
 		line := ""
-		for x := 0; x < circleSize*2; x++ {
-			dx := float64(x - circleSize)
-			dy := float64(y - center)
-			distance := sqrt(dx*dx + dy*dy)
-
-			// Draw thick circle (inner and outer radius)
-			if distance >= float64(radius-1) && distance <= float64(radius) {
-				// Calculate angle to determine if this is elapsed or remaining
-				angle := (atan2(dy, dx) + 2*3.14159) / (2 * 3.14159) * float64(totalSegments)
-				segment := int(angle) % totalSegments
-				if segment < elapsedSegments {
-					line += whiteStyle.Render("█")
-				} else {
-					line += redStyle.Render("█")
+		timerStart := (width - len(timer)) / 2 // 12 for timer length 5
+		timerEnd := timerStart + len(timer)    // 17
+		for x, char := range donutTemplate[y] {
+			if char == '*' {
+				// Calculate angle for progress marker (0 at 12 o'clock, clockwise)
+				dx := float64(x) - centerX
+				dy := float64(y) - centerY
+				angle := math.Atan2(dy, dx) + math.Pi/2 // Start at 12 o'clock
+				if angle < 0 {
+					angle += 2 * math.Pi
 				}
+				segment := int((angle / (2 * math.Pi)) * float64(totalSegments))
+				if segment < int(progress*float64(totalSegments)) {
+					line += whiteStyle.Render("*")
+				} else {
+					line += redStyle.Render("*")
+				}
+			} else if y == height/2 && x >= timerStart && x < timerEnd {
+				// Place the actual timer in the center
+				line += whiteStyle.Render(string(timer[x-timerStart]))
 			} else {
 				line += " "
 			}
@@ -189,33 +249,6 @@ func drawCircle(progress float64) string {
 	}
 
 	return strings.Join(lines, "\n")
-}
-
-// centerText centers the text within a given width
-func centerText(text string, width int, style lipgloss.Style) string {
-	padding := (width - len(text)) / 2
-	if padding < 0 {
-		padding = 0
-	}
-	return strings.Repeat(" ", padding) + style.Render(text) + strings.Repeat(" ", width-padding-len(text))
-}
-
-// sqrt and atan2 for circle calculations
-func sqrt(x float64) float64 {
-	return float64(int(1000*x+0.5)) / 1000 // Simplified for integer-based rendering
-}
-
-func atan2(y, x float64) float64 {
-	// Simplified atan2 for angle calculation
-	if x == 0 {
-		if y > 0 {
-			return 3.14159 / 2
-		} else if y < 0 {
-			return -3.14159 / 2
-		}
-		return 0
-	}
-	return float64(int(1000*3.14159*x/y+0.5)) / 1000 // Approximation
 }
 
 func main() {
@@ -235,6 +268,7 @@ func main() {
 		elapsedTime: 0,
 		isRunning:   true, // Start timer immediately
 		isPaused:    false,
+		blink:       true, // Start with text visible
 	}
 
 	p := tea.NewProgram(m, tea.WithAltScreen())
