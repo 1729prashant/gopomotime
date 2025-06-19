@@ -1,7 +1,8 @@
 # gopomotime
 
-`gopomotime` is a terminal-based pomodoro written in Go, featuring a very simplified ASCII art donut that displays a countdown timer.
+`gopomotime` is a higlhy simplified terminal-based pomodoro written in Go, featuring a simplr ASCII art donut that displays a countdown timer.
 
+<img src="https://github.com/1729prashant/gopomotime/blob/main/demo.gif" width="480" height="270" />
 
 ## Features
 - **ASCII Donut Timer**: A 13x29 character ASCII donut displays the timer (`MM:SS`) centered at columns 12–16.
