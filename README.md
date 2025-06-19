@@ -1,0 +1,2 @@
+# gopomotime
+Go Pomodoro TUI
