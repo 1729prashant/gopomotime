@@ -176,11 +176,11 @@ func (m model) View() string {
 	timer := fmt.Sprintf("%02d:%02d", minutes, seconds)
 
 	// Calculate progress for the donut (0.0 to 1.0), use wall clock for smoothness
-	progress := 0.0
+	progress := 0.000
 	if m.totalTime > 0 {
 		progress = float64(m.elapsedTime) / float64(m.totalTime)
-		if progress > 1.0 {
-			progress = 1.0 // Cap progress at 100%
+		if progress > 1.000 {
+			progress = 1.000 // Cap progress at 100%
 		}
 	}
 
