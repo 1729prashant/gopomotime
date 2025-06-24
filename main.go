@@ -15,7 +15,7 @@ import (
 const (
 	maxMinutes = 99
 	maxSeconds = 59
-	tickRate   = time.Second
+	tickRate   = 120 * time.Millisecond // ~30 FPS for smooth progress
 	blinkRate  = 800 * time.Millisecond
 	height     = 13 // Donut height
 	width      = 29 // Donut width
@@ -32,6 +32,9 @@ type model struct {
 	highlightKey       string
 	highlightUntil     time.Time
 	pendingPauseToggle bool // If true, toggle pause on highlightMsg
+
+	// Add a new field to model to track the start time for smooth progress
+	startTime time.Time
 }
 
 type tickMsg time.Time
@@ -99,6 +102,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.isRunning = true
 			m.isPaused = false
 			m.elapsedTime = 0
+			m.startTime = time.Now() // Reset start time for smooth progress
 			m.highlightKey = "r"
 			m.highlightUntil = now.Add(highlightDuration)
 			if wasRunning {
@@ -114,9 +118,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Tick(highlightDuration, func(t time.Time) tea.Msg { return highlightMsg{} })
 		}
 	case tickMsg:
-		// Handle timer tick
+		// Handle timer tick for smooth progress
 		if m.isRunning && !m.isPaused && m.elapsedTime < m.totalTime {
-			m.elapsedTime += tickRate
+			// Use wall clock time for smooth progress
+			now := time.Now()
+			m.elapsedTime = now.Sub(m.startTime)
 			if m.elapsedTime >= m.totalTime {
 				m.isRunning = false
 				m.isPaused = false
@@ -142,12 +148,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.isRunning {
 				m.isPaused = !m.isPaused
 				if !m.isPaused {
+					// When unpausing, adjust startTime so elapsedTime is continuous
+					m.startTime = time.Now().Add(-m.elapsedTime)
 					m.pendingPauseToggle = false
 					return m, tickCmd()
 				}
 			} else {
 				m.isRunning = true
 				m.isPaused = false
+				m.startTime = time.Now().Add(-m.elapsedTime)
 			}
 			m.pendingPauseToggle = false
 		}
@@ -166,7 +175,7 @@ func (m model) View() string {
 	seconds := int(remaining.Seconds()) % 60
 	timer := fmt.Sprintf("%02d:%02d", minutes, seconds)
 
-	// Calculate progress for the donut (0.0 to 1.0)
+	// Calculate progress for the donut (0.0 to 1.0), use wall clock for smoothness
 	progress := 0.0
 	if m.totalTime > 0 {
 		progress = float64(m.elapsedTime) / float64(m.totalTime)
@@ -368,7 +377,8 @@ func main() {
 		elapsedTime: 0,
 		isRunning:   true, // Start timer immediately
 		isPaused:    false,
-		blink:       true, // Start with text visible
+		blink:       true,       // Start with text visible
+		startTime:   time.Now(), // For smooth progress
 	}
 
 	// Start the Bubble Tea program with alternate screen
